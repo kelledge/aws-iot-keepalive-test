@@ -9,4 +9,4 @@ dependencies: ./packages
 credentials: $(HOME)/.aws/credentials
 
 run: dependencies credentials
-	. packages/bin/activate && ./keepalive-test
+	-. packages/bin/activate && ./keepalive-test

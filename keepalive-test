@@ -6,10 +6,12 @@ import atexit
 import logging
 import sys
 import pprint
+import uuid
+
+from tempfile import NamedTemporaryFile
 
 from AWSIoTPythonSDK.MQTTLib import AWSIoTMQTTShadowClient
 from AWSIoTPythonSDK.MQTTLib import AWSIoTMQTTClient
-from tempfile import NamedTemporaryFile
 
 
 ROOT_CA_CERT = """\
@@ -59,8 +61,11 @@ IOT_ADMIN_POLICY = """\
 
 
 def get_logger():
+    """
+    Handles python logging boilerplate
+    """
     logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     streamHandler = logging.StreamHandler()
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     streamHandler.setFormatter(formatter)
@@ -70,26 +75,32 @@ def get_logger():
 
 
 def create_thing_with_certificate(client):
-    thing = client.create_thing(
-        thingName="test"
-    )
+    """
+    Creates a unique thing, certificate, and policy.
 
+    Names are based on the randomly generated certificate ID
+    TODO: Should belong in a class
+    """
     cert = client.create_keys_and_certificate(
         setAsActive=True
     )
 
+    thing = client.create_thing(
+        thingName=cert['certificateId']
+    )
+
     policy = client.create_policy(
-        policyName='IotAdmin',
+        policyName=cert['certificateId'],
         policyDocument=IOT_ADMIN_POLICY
     )
 
     assoc_principal = client.attach_thing_principal(
-        thingName='test',
+        thingName=cert['certificateId'],
         principal=cert['certificateArn']
     )
 
     assoc_plicy = client.attach_principal_policy(
-        policyName='IotAdmin',
+        policyName=cert['certificateId'],
         principal=cert['certificateArn']
     )
 
@@ -97,7 +108,11 @@ def create_thing_with_certificate(client):
 
 
 def remove_thing_with_certificate(client, thing, cert, policy):
+    """
+    Deletes a thing, certificate, policy tuple
 
+    TODO: Should belong in a class
+    """
     client.detach_thing_principal(
         thingName=thing['thingName'],
         principal=cert['certificateArn']
@@ -127,6 +142,9 @@ def remove_thing_with_certificate(client, thing, cert, policy):
 
 
 def create_certificate_tempfiles(cert):
+    """
+    Creates the credentials as named temporary files.
+    """
     root_ca = NamedTemporaryFile(delete=True)
     private_key = NamedTemporaryFile(delete=True)
     certificate = NamedTemporaryFile(delete=True)
@@ -143,27 +161,36 @@ def create_certificate_tempfiles(cert):
 
 
 def remove_certificate_tempfiles(root_ca, private_key, certificate):
+    """
+    Closes (and therefore removes from disk) the credential files
+    """
     root_ca.close()
     private_key.close()
     certificate.close()
 
 
 def main():
+    """
+    Main entry point.
+
+    Spins up an epemeral IoT Thing and connects to AWS IoT to test if keepalive
+    messages are counted against your bill.
+    """
     logger = get_logger()
     client = boto3.client('iot')
 
     thing, cert, policy = create_thing_with_certificate(client)
     root_ca, private_key, certificate = create_certificate_tempfiles(cert)
+
+    # Make sure all resources get cleaned up properly at exit
     atexit.register(remove_thing_with_certificate, client, thing, cert, policy)
     atexit.register(remove_certificate_tempfiles, root_ca, private_key, certificate)
 
     endpoint = client.describe_endpoint()
 
-    logger.debug(pprint.pprint(endpoint))
-    logger.debug(root_ca.read())
-    logger.debug(private_key.read())
-    logger.debug(certificate.read())
-    logger.debug(endpoint['endpointAddress'])
+    # Get the important info to stdout
+    logger.info("%r", endpoint)
+    logger.info("%r", cert)
 
     mqtt_client = AWSIoTMQTTClient("myClient")
     mqtt_client.configureEndpoint(endpoint['endpointAddress'], 8883)
@@ -174,8 +201,8 @@ def main():
     mqtt_client.configureConnectDisconnectTimeout(10)
     mqtt_client.configureMQTTOperationTimeout(5)
 
-    mqtt_client.connect()
-    mqtt_client.publish("myTopic", "myPayload", 0)
+    mqtt_client.connect(keepAliveIntervalSecond=5)
+    mqtt_client.publish("keepaliveTest", cert['certificateId'], 0)
 
     while True:
         time.sleep(1)
